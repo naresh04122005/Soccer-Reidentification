@@ -1,184 +1,695 @@
-# ⚽ Soccer Player Tracking and Re-Identification
+# ⚽ SoccerVision — Player Tracking & Re-Identification
 
-This project implements a hybrid system for tracking and re-identifying soccer players in video footage. It combines:
-
-- 🧠 YOLOv11: For real-time detection of players and the ball  
-- 🔄 Deep SORT: For assigning and maintaining consistent player IDs  
-- 🧬 OSNet (TorchReID): For re-identifying players based on deep appearance features  
-- 🎨 Dominant Jersey Color + 🧭 Motion Similarity: For robust fallback matching when tracking fails
+> A hybrid computer-vision pipeline for detecting, tracking, and re-identifying soccer players across video frames using **YOLO, Deep SORT, OSNet, appearance embeddings, jersey-color analysis, and motion cues**.
 
 ---
 
-## 📦 Modules
+## 🎯 Overview
 
-| File / Folder | Description |
-|---------------|-------------|
-| `model2.py` | Main script — performs detection, tracking, and re-identification |
-| `reid_functions.py` | Utility functions for color detection, deep feature extraction, IoU, motion similarity |
-| `deep_sort_pytorch/` | Deep SORT tracker (must clone or download separately) |
-| `soccer_yolov11.pt` | YOLOv11 model weights for detection (**must be added manually** due to GitHub size limits) |
-| `15sec_input_720p.mp4` | Sample soccer video used for testing |
-| `output_video.mp4` | Output video with player boxes and consistent tracking IDs |
-| `requirements.txt` | Python dependencies |
+Tracking players in a soccer match is more challenging than simply detecting people in individual frames.
+
+Players constantly:
+
+* enter and leave the camera view
+* overlap during tackles and set pieces
+* become temporarily occluded
+* change position rapidly
+* appear visually similar because teammates wear identical kits
+* lose their tracking identity when a tracker can no longer associate them with previous observations
+
+**SoccerVision** addresses these challenges with a hybrid detection, tracking, and re-identification pipeline.
+
+Instead of relying exclusively on a conventional multi-object tracker, the system combines several independent signals to recover player identities when tracking continuity is broken.
+
+### Core pipeline
+
+```text
+                Input Video
+                     │
+                     ▼
+          ┌─────────────────────┐
+          │   YOLO Detection    │
+          │ Players + Ball      │
+          └──────────┬──────────┘
+                     │
+                     ▼
+          ┌─────────────────────┐
+          │     Deep SORT       │
+          │ Short-term Tracking │
+          └──────────┬──────────┘
+                     │
+              Track Lost?
+                /        \
+              No          Yes
+              │            │
+              │            ▼
+              │    ┌───────────────┐
+              │    │ Hybrid Re-ID  │
+              │    └───────┬───────┘
+              │            │
+              │     ┌──────┼──────┐
+              │     ▼      ▼      ▼
+              │  OSNet   Motion  Color
+              │ Features Similarity Similarity
+              │     │      │      │
+              │     └──────┼──────┘
+              │            ▼
+              │      Match Scoring
+              │            │
+              └────────────┤
+                           ▼
+                  Consistent Player IDs
+                           │
+                           ▼
+                    Annotated Video
+```
 
 ---
 
-## 🧪 Motivation & Challenges Faced
+# ✨ Key Features
 
-During implementation, I realized that **pure tracking-based methods (like Deep SORT)** suffer heavily when:
+### 🧠 Deep Player Re-Identification
 
-- Players **go off-frame and return**  
-- **Occlusion** by other players leads to loss of track  
-- **Similar appearances** (e.g., same jersey colors) cause ID switches  
+Uses **OSNet-based person re-identification embeddings** to compare the appearance of players across frames.
 
-To solve these, I integrated **hybrid ReID strategies** using:
+Historical embeddings are maintained for tracks so that a player can potentially be recovered after temporary tracking failure.
 
-1. **OSNet-based deep features**: Extracted player-level embeddings for appearance comparison.
-2. **Dominant jersey color via k-means**: Used RGB distribution as a soft validation step.
-3. **Kalman-filter predictions** + **trajectory proximity**: Used spatial motion to validate visual similarity.
+### 🔄 Deep SORT Tracking
 
-I had to **fine-tune weighting parameters** (e.g., 0.5 appearance + 0.4 motion + 0.2 color) for optimal balance, and prevent false matches in cluttered scenes.
+Deep SORT provides short-term multi-object tracking and maintains player identities while visual and spatial continuity is available.
+
+### 👕 Jersey Appearance Analysis
+
+Dominant jersey color is extracted from player regions using color clustering.
+
+This provides an additional appearance cue when multiple players have similar body-level features.
+
+### 🧭 Motion-Aware Matching
+
+Spatial information is incorporated into re-identification.
+
+The system considers:
+
+* recent player trajectories
+* predicted positions
+* previous player locations
+* distance between predicted and observed positions
+
+This helps reject visually plausible but spatially unlikely matches.
+
+### ⚽ Player & Ball Detection
+
+The YOLO model is used as the detection stage for the soccer footage, providing object detections that feed the tracking pipeline.
+
+### 🧩 Hybrid Matching
+
+Instead of depending on a single metric, multiple signals are combined:
+
+```text
+Appearance
+    +
+Motion
+    +
+Color
+    ↓
+Re-Identification Score
+```
+
+This makes the system more robust to temporary occlusion and track fragmentation.
 
 ---
 
-## ⚙️ Installation & Setup
+# 🏗️ Project Structure
 
-### 1. Clone the Repository
+```text
+Soccer-Reidentification/
+│
+├── model2.py
+├── reid_functions.py
+├── requirements.txt
+│
+├── deep_sort_pytorch/
+│   └── ...
+│
+├── soccer_yolov11.pt
+├── 15sec_input_720p.mp4
+├── output_video.mp4
+│
+├── .gitignore
+└── README.md
+```
+
+> Large model weights and video files are intentionally excluded from the Git repository where appropriate.
+
+---
+
+# 🔬 How It Works
+
+## 1. Object Detection
+
+Each video frame is passed through the YOLO detection model.
+
+The detector identifies relevant objects such as:
+
+```text
+Player
+Ball
+```
+
+The resulting bounding boxes are passed into the tracking stage.
+
+---
+
+## 2. Short-Term Tracking
+
+Detected players are processed by **Deep SORT**.
+
+Deep SORT associates detections across consecutive frames using spatial and appearance information.
+
+When a player remains continuously visible, the tracker can maintain the same ID without requiring expensive re-identification on every frame.
+
+Example:
+
+```text
+Frame 100   → Player 7
+Frame 101   → Player 7
+Frame 102   → Player 7
+Frame 103   → Player 7
+```
+
+---
+
+## 3. Track Fragmentation
+
+A tracking identity can be lost when a player:
+
+```text
+             ┌─────────────┐
+             │ Player View │
+             └──────┬──────┘
+                    │
+             temporary occlusion
+                    │
+                    ▼
+             ┌─────────────┐
+             │ Track Lost  │
+             └──────┬──────┘
+                    │
+                    ▼
+             Player Reappears
+                    │
+                    ▼
+              Hybrid Re-ID
+                    │
+                    ▼
+             Previous ID?
+```
+
+Instead of immediately treating the returning player as a completely new identity, the system evaluates previously lost tracks.
+
+---
+
+# 🧬 Re-Identification
+
+The re-identification stage combines three complementary signals.
+
+## 1. Appearance Similarity
+
+OSNet generates a feature representation for each detected player.
+
+Conceptually:
+
+```text
+Player Crop
+     │
+     ▼
+   OSNet
+     │
+     ▼
+Feature Embedding
+     │
+     ▼
+Similarity Comparison
+```
+
+Historical feature observations are retained for tracks.
+
+When a new detection appears, its embedding can be compared with the stored representation of previously lost players using cosine similarity.
+
+---
+
+## 2. Jersey Color Similarity
+
+Players from the same team can have very similar visual appearances.
+
+A dominant-color representation provides another lightweight visual cue.
+
+The pipeline extracts representative RGB color information from the player crop and compares it against the historical appearance of the track.
+
+Conceptually:
+
+```text
+Player Crop
+    │
+    ▼
+Color Clustering
+    │
+    ▼
+Dominant Color
+    │
+    ▼
+Distance / Similarity
+```
+
+Color is treated as a supporting signal rather than the sole identity criterion.
+
+---
+
+## 3. Motion Similarity
+
+Visual similarity alone can produce incorrect matches.
+
+For example:
+
+```text
+Player A → visually similar
+Player B → visually similar
+
+Current detection is physically close to Player A
+but far from Player B
+```
+
+Motion information can therefore help resolve ambiguity.
+
+Depending on available tracking information, the system can use predicted or historical positions to estimate how plausible a candidate match is.
+
+---
+
+# 🧮 Matching Strategy
+
+The final matching decision combines the available signals.
+
+The implemented scoring formulation is:
+
+```text
+Score =
+    0.5 × Appearance Similarity
+  + 0.4 × Motion Similarity
+  + 0.2 × Color Similarity
+```
+
+The individual components contribute different information:
+
+| Signal         | Purpose                 |
+| -------------- | ----------------------- |
+| Appearance     | Visual identity         |
+| Motion         | Spatial consistency     |
+| Color          | Jersey-level appearance |
+| Combined Score | Candidate ranking       |
+
+> The weights are implementation parameters and can be tuned for different footage and camera configurations.
+
+---
+
+# 🛠️ Technology Stack
+
+| Technology       | Role                                   |
+| ---------------- | -------------------------------------- |
+| **Python**       | Core implementation                    |
+| **YOLOv11**      | Object detection                       |
+| **Deep SORT**    | Multi-object tracking                  |
+| **OSNet**        | Person re-identification               |
+| **TorchReID**    | Re-ID model interface                  |
+| **OpenCV**       | Video processing                       |
+| **NumPy**        | Numerical operations                   |
+| **scikit-learn** | Color clustering / supporting analysis |
+
+---
+
+# 🚀 Getting Started
+
+## Requirements
+
+Recommended environment:
+
+```text
+Python 3.x
+PyTorch
+CUDA-enabled GPU (recommended)
+```
+
+A GPU is strongly recommended for practical inference speed, particularly when extracting deep Re-ID features.
+
+---
+
+## 1. Clone
 
 ```bash
-git clone https://github.com/sparsh2347/Soccer-Reidentification.git
+git clone https://github.com/naresh04122005/Soccer-Reidentification.git
 cd Soccer-Reidentification
 ```
-### 2. Install Dependencies
+
+---
+
+## 2. Install Dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
-Also install torchreid if not already installed:
+
+Install TorchReID if it is not already included in your environment:
 
 ```bash
 pip install torchreid
 ```
 
-### 3. Download YOLOv11 Weights
-Due to GitHub's 100MB limit, the file soccer_yolov11.pt (~186MB) cannot be pushed to GitHub.<br>
-Please place your trained soccer_yolov11.pt file manually in the project root.
-
 ---
 
-## 🚀 How to Run
-```
-python model2.py
-```
-Input: 15sec_input_720p.mp4
+# 📦 Model Weights
 
-Output: output_video.mp4 (contains bounding boxes and re-identified players)
+The YOLO model weights are larger than GitHub's standard individual-file limit and therefore should not be committed directly to the repository.
 
----
+### Download
 
-## 🔍 Re-Identification Logic
+**YOLO Soccer Detection Model**
 
-One of the biggest challenges in sports video analytics is maintaining **consistent player identities** when players leave the frame, get occluded, or switch positions rapidly. While Deep SORT is highly effective for short-term tracking, it tends to **lose IDs permanently** when visual continuity is broken.
+[Download `soccer_yolov11.pt`](https://drive.google.com/uc?export=download&id=1kQCbXQqg3C9DXtllPS5WgMVOl3kaRkYH)
 
-To solve this, we implemented a **hybrid re-identification system** that leverages multiple cues to recover lost tracks and reassign consistent IDs:
-
-### 👕 1. Appearance Similarity (OSNet-based)
-
-We use **OSNet**, a state-of-the-art person re-identification model, to extract a **deep feature embedding** from each player's crop. These feature vectors represent the visual appearance of players (jersey, posture, etc.) in a high-dimensional space.
-
-- Feature vectors are stored per track (up to last 6 observations).
-- On unmatched detections, a **cosine similarity** is computed between the current embedding and the historical average embedding of each lost track.
-
-### 🎨 2. Dominant Color Similarity
-
-Even when deep features are close, players from the **same team may look visually similar** (e.g., similar body type + jersey). So we compute the **dominant jersey color** using **k-means clustering on pixel colors**, reducing ambiguity.
-
-- We extract the dominant RGB color of the detected player crop.
-- We compute a **Euclidean distance** between current and stored jersey colors.
-- This gives a color similarity score, with high values indicating strong match.
-
-### 🧭 3. Motion Similarity
-
-When players reappear after a brief disappearance, **spatial reasoning** plays a big role. If Kalman filters were active for that player, we use their last known predicted location as a motion prior. Otherwise, we fall back to **last-seen trajectory proximity**.
-
-- Kalman mean is compared to current center location.
-- If not available, we compare the Euclidean distance between the current center and the previous few positions stored.
-
----
-
-### 🧮 Combined Matching Score
-
-To unify all the above signals, we use a **weighted scoring function**:
+After downloading, place the model in the project root:
 
 ```text
-score = 0.5 × appearance_similarity 
-      + 0.4 × motion_similarity 
-      + 0.2 × color_similarity
+Soccer-Reidentification/
+└── soccer_yolov11.pt
 ```
 
----
-## 📌 Future Improvements
-
-Here are some planned enhancements to improve accuracy, robustness, and functionality:
-
-- ✅ **Goalkeeper Detection**  
-  Incorporate logic to distinguish goalkeepers using jersey color patterns and spatial positioning.
-
-- 🎯 **Ball Tracking & Interaction Analysis**  
-  Extend detection to track the ball consistently and detect player-ball interactions (e.g., passes, goals).
-
-- 🧠 **Jersey Number Recognition (OCR)**  
-  Use OCR (like EasyOCR or Tesseract) to extract jersey numbers and use them for better re-identification.
-
-- 📈 **Better Feature Matching**  
-  Replace basic cosine similarity with advanced metric learning or clustering for improved ReID matching.
-
-- 🎥 **Real-Time Inference Pipeline**  
-  Optimize the pipeline for real-time processing using TensorRT, ONNX, or streaming video input (e.g., webcam).
-
-- 🔁 **Model Selection UI**  
-  Build a Streamlit or Gradio interface to upload videos and select detection/re-ID model configurations dynamically.
-
-- 🧩 **Modular Configuration System**  
-  Migrate static paths and constants (e.g., confidence threshold, frame repeat) to a config file (YAML/JSON).
+Make sure the filename matches the path expected by the inference code.
 
 ---
 
-##❗ Notes
+# 🎥 Input Video
 
-- Avoid pushing large files (>100MB) like `.pt` models or `.mp4` videos to GitHub. Use [Git LFS](https://git-lfs.github.com) if needed.
-- `deep_sort_pytorch/` should either be cloned as a submodule or copied manually.
-- `__pycache__/` folders should be excluded from version control via `.gitignore`.
+The example pipeline uses:
 
+```text
+15sec_input_720p.mp4
+```
+
+Place the input video in the project directory if it is not already available.
+
+For larger datasets or videos, consider storing them outside Git or using Git LFS / external object storage.
 
 ---
 
-## 📦 Model Weights
+# ▶️ Running the Pipeline
 
-The detection model (`soccer_yolov11.pt`) is too large to be stored directly in this repository due to GitHub’s 100MB file size limit.
-
-🔗 **Download Model (YOLOv11 fine-tuned for Soccer Player & Ball Detection)**  
-👉 [Click here to download `soccer_yolov11.pt`](https://drive.google.com/uc?export=download&id=1kQCbXQqg3C9DXtllPS5WgMVOl3kaRkYH)
-
-Once downloaded, **place the file at the following path** in your project directory:
+Run:
 
 ```bash
-Scocer ReIdentification/soccer_yolov11.pt
+python model2.py
 ```
-⚠️ **Important:** Ensure the filename and path are exactly the same as referenced in `model2.py`.  
-If you place it elsewhere or rename it, update the `MODEL_PATH` variable accordingly:
 
-```python
-MODEL_PATH = "Scocer ReIdentification/soccer_yolov11.pt"
+The pipeline processes the configured input video and generates the corresponding annotated output.
+
+Example:
+
+```text
+Input
+└── 15sec_input_720p.mp4
+
+        │
+        ▼
+
+Detection
+        │
+        ▼
+
+Deep SORT
+        │
+        ▼
+
+Hybrid Re-ID
+        │
+        ▼
+
+Output
+└── output_video.mp4
 ```
 
 ---
 
-## 📄 License
-This project is intended for academic and research use only.
+# 📊 Output
+
+The generated video contains:
+
+* player detections
+* tracking bounding boxes
+* player IDs
+* re-identified tracks
+
+The primary objective is to maintain a more consistent identity assignment when players temporarily disappear or become occluded.
 
 ---
 
-## 🙋 Author
-Sparsh Sinha<br>
-B.Tech CSB, IIIT Lucknow<br>
-GitHub: @sparsh2347<br>
+# ⚠️ Current Limitations
+
+This system is designed as a research/experimental pipeline and is not intended to solve every soccer-tracking scenario.
+
+Performance can degrade under:
+
+* severe player occlusion
+* extremely small player crops
+* heavy motion blur
+* abrupt camera movement
+* large viewpoint changes
+* visually identical players
+* long periods where a player remains completely outside the frame
+* crowded penalty-box scenes
+
+Jersey color can also become unreliable under changing illumination, shadows, compression artifacts, or similar team kits.
+
+---
+
+# 🔮 Roadmap
+
+Potential improvements include:
+
+### 🧤 Goalkeeper Identification
+
+Use spatial position, jersey appearance, and detection characteristics to distinguish goalkeepers from outfield players.
+
+### 🔢 Jersey Number Recognition
+
+Integrate OCR to extract jersey numbers and use them as a high-confidence identity cue.
+
+Possible pipeline:
+
+```text
+Player Detection
+      │
+      ▼
+Jersey Region
+      │
+      ▼
+OCR
+      │
+      ▼
+Jersey Number
+      │
+      ▼
+Identity Verification
+```
+
+### ⚽ Ball & Player Interaction
+
+Extend the pipeline to detect events such as:
+
+* player possession
+* passes
+* ball recovery
+* shots
+* player-ball proximity
+
+### 📐 Improved Re-ID
+
+Explore stronger metric-learning and temporal aggregation techniques instead of relying primarily on manually weighted similarity components.
+
+### ⚡ Real-Time Inference
+
+Investigate:
+
+* ONNX
+* TensorRT
+* GPU batching
+* model quantization
+* asynchronous video processing
+
+### 🖥️ Interactive Interface
+
+Add a lightweight Streamlit or Gradio interface allowing users to:
+
+1. upload a match video
+2. select models
+3. configure thresholds
+4. run inference
+5. preview the resulting tracking output
+
+### ⚙️ Configuration System
+
+Move hard-coded parameters into a configuration file:
+
+```text
+config/
+└── default.yaml
+```
+
+This would make experiments easier to reproduce and compare.
+
+---
+
+# 🧪 Reproducibility
+
+For consistent experiments, keep track of:
+
+```text
+Detection Model
+Re-ID Model
+Confidence Threshold
+Tracking Parameters
+Re-ID Weights
+Input Resolution
+GPU / CPU Configuration
+```
+
+When comparing experiments, change one major parameter at a time whenever possible.
+
+---
+
+# 📝 Development Notes
+
+The project intentionally separates the main inference pipeline from supporting Re-ID utilities.
+
+### `model2.py`
+
+Main orchestration layer responsible for:
+
+* video processing
+* detection
+* tracking
+* identity management
+* output generation
+
+### `reid_functions.py`
+
+Supporting functionality for:
+
+* feature extraction
+* appearance comparison
+* color analysis
+* IoU calculations
+* motion similarity
+* Re-ID utilities
+
+### `deep_sort_pytorch/`
+
+Deep SORT implementation used by the tracking pipeline.
+
+---
+
+# 📁 Large Files
+
+Avoid committing large generated or binary assets directly to Git.
+
+Examples:
+
+```text
+*.pt
+*.pth
+*.mp4
+*.avi
+*.mov
+```
+
+For large assets, use:
+
+* Git LFS
+* Google Drive
+* Hugging Face Hub
+* cloud object storage
+
+and document the download location in this README.
+
+---
+
+# 🔐 Recommended `.gitignore`
+
+```gitignore
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+*.pt
+*.pth
+
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+output/
+outputs/
+
+.ipynb_checkpoints/
+
+.vscode/
+.idea/
+
+.DS_Store
+```
+
+---
+
+# 📜 License
+
+This project is intended for **academic and research purposes**.
+
+Before redistributing model weights, datasets, or third-party components, verify the applicable licenses and usage restrictions.
+
+---
+
+# 👨‍💻 Author
+
+**Naresh Sihag**
+
+GitHub: `@naresh04122005`
+
+---
+
+## ⭐ Project Summary
+
+**SoccerVision** combines object detection, multi-object tracking, and appearance-based re-identification into a unified pipeline for soccer video analysis.
+
+The central idea is simple:
+
+```text
+Detection alone
+       ↓
+Tracking alone
+       ↓
+       ❌
+
+Detection
+    +
+Tracking
+    +
+Appearance
+    +
+Jersey Color
+    +
+Motion
+    ↓
+More Robust Player Re-Identification
+```
+
+The project provides a foundation for building more advanced soccer analytics systems involving player identity, trajectories, team analysis, and player-ball interactions.
